@@ -1,0 +1,60 @@
+# Compila el .ipa (sin firmar, para AltStore) de un repo privado y lo sube a
+# la rama "builds" de ese mismo repo privado. Este repo no contiene código.
+#
+# El log de un repo público lo ve cualquiera: la salida de xcodebuild va a un
+# archivo y, si falla, solo se imprimen las líneas "error:".
+name: Build iOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: arielfmeza91/azuracast-manager
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          path: src
+
+      - name: Instalar XcodeGen
+        run: brew install xcodegen
+
+      - name: Generar el proyecto
+        working-directory: src/ios
+        run: xcodegen generate
+
+      - name: Compilar para dispositivo (sin firmar)
+        working-directory: src/ios
+        run: |
+          if ! xcodebuild build \
+              -project AzuraCastManager.xcodeproj \
+              -scheme AzuraCastManager \
+              -configuration Release \
+              -sdk iphoneos \
+              -derivedDataPath "$RUNNER_TEMP/dd" \
+              CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+              > "$RUNNER_TEMP/build.log" 2>&1; then
+            grep -E "error:" "$RUNNER_TEMP/build.log" | sort -u | head -60
+            exit 1
+          fi
+          echo "Compilación correcta"
+
+      - name: Crear el .ipa
+        run: |
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/AzuraCastManager.app" "$RUNNER_TEMP/ipa/Payload/"
+          cd "$RUNNER_TEMP/ipa" && zip -qr AzuraCastManager.ipa Payload
+
+      - name: Subir el .ipa al repo privado (rama builds)
+        working-directory: src
+        run: |
+          git config user.name "build"
+          git config user.email "build@users.noreply.github.com"
+          git checkout --orphan builds
+          git rm -rf -q .
+          cp "$RUNNER_TEMP/ipa/AzuraCastManager.ipa" .
+          git add AzuraCastManager.ipa
+          git commit -q -m "Build iOS $(date -u +%Y-%m-%d_%H:%M)"
+          git push -f origin builds
